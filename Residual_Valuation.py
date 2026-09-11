@@ -1,11 +1,54 @@
 import streamlit as st
 import pandas as pd
+import json
+from pathlib import Path
 
 from valuation_core import get_inputs, compute_valuation
 
 # ---------- Configuration ----------
 st.set_page_config(page_title="Land Bid Feasibility", layout="wide")
 
+# ---------- Project Persistence (Save / Load) ----------
+PROJECTS_FILE = Path(__file__).parent / "saved_projects.json"
+
+# Every input widget key this page controls (must match the keys below)
+INPUT_KEYS = [
+    "gfa", "efficiency", "asp",
+    "bid_price", "const_cost", "prof_fee", "sm_fee",
+    "interest", "land_loan_period", "const_loan_period",
+    "land_ltv_pct", "const_ltv_pct",
+]
+# Keys whose text boxes use 2-decimal float formatting
+FLOAT_KEYS = {"efficiency", "interest", "land_loan_period", "const_loan_period"}
+
+
+def load_projects():
+    """Read all saved bidding projects from disk."""
+    if PROJECTS_FILE.exists():
+        try:
+            data = json.loads(PROJECTS_FILE.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def save_projects(projects):
+    """Write all bidding projects to disk."""
+    PROJECTS_FILE.write_text(json.dumps(projects, indent=2), encoding="utf-8")
+
+
+def apply_project_to_state(project_inputs):
+    """Push a saved project's values into session_state.
+    Must run BEFORE any widget using these keys is created."""
+    for k in INPUT_KEYS:
+        if k in project_inputs and project_inputs[k] is not None:
+            v = project_inputs[k]
+            st.session_state[k] = v
+            if k in FLOAT_KEYS:
+                st.session_state[f"{k}_txt"] = f"{v:,.2f}"
+            else:
+                st.session_state[f"{k}_txt"] = f"{int(v):,}"
 
 # --- Custom Helper Function for Synced Slider & TEXT Box (With Commas!) ---
 def sync_slider_input(label, min_val, max_val, default_val, step, key, is_float=False):
@@ -81,6 +124,10 @@ def sync_slider_input(label, min_val, max_val, default_val, step, key, is_float=
 
 
 def main():
+    # --- Apply a queued project Load FIRST (before any widget is created) ---
+    if st.session_state.get("_pending_koad"):
+        apply_project_to_state(st.session_state.pop("_pending_load"))
+
     # --- Custom CSS for layout spacing ---
     st.markdown("""
         <style>
@@ -136,6 +183,41 @@ def main():
     # --- Shared Calculation (same engine the ROI page uses) ---
     inputs = get_inputs(st.session_state)
     res = compute_valuation(inputs)
+
+    # --- Sidebar: Bidding Projects (Save / Load / Delete) ---
+    with st.sidebar:
+        st.header("📁 Bidding Projects")
+        projects = load_projects()
+
+        #1) Save current inputs under a project name
+        save_name = st.text_input("Project name", key="save_project_name", placeholder="e.g. KT Site")
+
+        if st.button("💾 Save current project", use_container_width=True):
+            name = save_name.strip()
+            if not name:
+                st.warning("Enter a project name first.")
+            else:
+                projects[name] = {k: inputs.get(k) for k in INPUT_KEYS}
+                save_projects(projects)
+                st.success(f"Saved"{name}".")
+
+        st.divider()
+
+        #2) Load or delete a saved project
+        if projects:
+            selected = st.selectbox("Saved projects", list(projects.key()), key="selected_project")
+            load_col, del_col = st.columns(2)
+            with load_col:
+                if st.button("📂 Load", use_continer_width=True):
+                    st.session_state["_pending_load"]=projects[selected]
+                    st.rerun()
+            with del_col:
+                if st.button("🗑 Delete", use_container_width=True):
+                    del projects[selected]
+                    save_projects(projects)
+                    st.rerun()
+        else: 
+            st.info("No saved project yet.")
 
     # Unpack for display
     gfa = inputs["gfa"]
